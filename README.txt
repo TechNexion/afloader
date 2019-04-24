@@ -18,10 +18,10 @@ To build:
 This program uses gnu autotools to build.
 
 $ autoreconf --install
-$ configure --host <prefix of arm toolchain>
+$ ./configure --host <prefix of arm toolchain>
 
-Example:
-$ configure --host aarch64-linux-gnu
+Example (for ARM64 targets):
+$ ./configure --host aarch64-linux-gnu
 
 Then build by running Make:
 $ make
