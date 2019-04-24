@@ -22,6 +22,7 @@
 #include <linux/types.h>
 #include <linux/spi/spidev.h>
 #include <ctype.h>
+#include <errno.h>
 #include "MachXO3.h"
 
 /* Convenient types */
@@ -33,6 +34,7 @@ typedef unsigned long u32;
 #define SLEEP(t)	usleep(t*1000)
 
 /* Subroutine declarations */
+u32 af_disable_shared_sysconfig(void);
 u32 af_open(void);
 u32 af_close(void);
 u32 af_read_device_id(u8 *DeviceID);
@@ -73,6 +75,9 @@ int gSPIPort = 0;
 
 // SPI device file path
 char gSpiDevFilePath[100] = "/dev/spidev2.2";
+
+// Axon Fabric path
+char gFabricSysfsPath[100] = "/sys/bus/i2c/drivers/axonfabric/3-0041/shared_sysconfig_disable";
 
 // JEDEC file path
 char gJEDECFilePath[256];
@@ -142,8 +147,8 @@ void print_help() {
 	printf("   -h : Print this help.\n");
 }
 
-
-/* MAIN accepts a command line argument of the JEDEC file to be written to
+/*
+   MAIN accepts a command line argument of the JEDEC file to be written to
    the part and proceeds with part communication.  To verify communication,
    device id codes are read and printed.  Then the device is erased and
    programmed from the specified JEDEC file.
@@ -157,7 +162,7 @@ int main (int argc, char *argv[]) {
 	opterr = 0;
 	int print_id_only = 0;
 
-	while ((c = getopt(argc, argv, "iqhrd:j:")) != -1) {
+	while ((c = getopt(argc, argv, "iqhred:j:")) != -1) {
 		switch (c) {
 			case 'd': // SPI device file name
 				sprintf(gSpiDevFilePath,"%s",optarg);
@@ -193,6 +198,11 @@ int main (int argc, char *argv[]) {
 
 	if(gDryRun) {
 		printf("Dry run only. Fabric configuration will NOT be affected. Erase and programming are faked\n");
+	}
+
+	// Disable the shared SYSconfig pins
+	if(af_disable_shared_sysconfig()) {
+		return(af_err_hardware());
 	}
 
 	// Configure SPI connection to module
@@ -246,6 +256,61 @@ int main (int argc, char *argv[]) {
 /*--------------------------------------------------------------------------*/
 /* Exported Functions                                                       */
 /*--------------------------------------------------------------------------*/
+
+/*
+	af_disable_shared_sysconfig will first attempt to read the
+	'shared_sysconfig_disable' file in the sysfs path. If it can read this
+	file, it will attempt to write '1' to it which will disable the fabric
+	I/O that are shared with the sysconfig signals. On Axon, the SPI_B bus
+	connects to both the regular fabric I/O and also the sysconfig SPI
+	slave pins. It is required to disable the fabric I/O connected to these
+	pins in order to prevent contention during the fabric programming
+	process.
+*/
+
+u32 af_disable_shared_sysconfig(void) {
+
+	// First attempt to open the file. If the file does not exist, then it
+	// it is likely that the axonfabric driver failed to probe the fabric,
+	// and the fabric is not programmed.
+
+	int ssd_fd;
+	char buf[10];
+	int ret;
+
+	ssd_fd = open(gFabricSysfsPath, O_RDWR);
+
+	if(ssd_fd < 0) {
+		printf("Unable to open fabric sysfs file \"%s\": %s\n", gFabricSysfsPath, strerror(errno));
+		printf("Fabric is likely not programmed, or axonfabric driver is not loaded\n");
+		printf("This will not stop the programming process\n");
+		return(0);  // Return normal
+	}
+
+	/* Read the file */
+	ret = read(ssd_fd, buf, 1);
+	if(ret < 1) {
+		printf("Unable to read sysfs file: %s\n", strerror(errno));
+		return (1); // This is an error and we should stop the programming process.
+	}
+
+	printf("Shared SYSconfig Disable bit set to %c\n", buf[0]);
+
+	if(buf[0] == '0') {
+		printf("Disabling shared SYSconfig I/O on fabric... \n");
+		ret = write(ssd_fd,"1",1);
+		if(ret < 0) {
+			printf("Unable to write sysfs file: %s\n", strerror(errno));
+			return(1);
+		}
+	}
+
+	printf("Shared SYSconfig disabled\n");
+
+	close(ssd_fd);
+
+	return(0);
+}
 
 /*
 	af_open will establish a connection to the FPGA through the chosen
@@ -333,8 +398,6 @@ u32 af_read_device_id(u8 *DeviceID) {
 		return(af_err_null_ptr());
 	};
 
-	if(!gRunQuiet) printf("Reading device ID\n");
-
 	// Construct the command
 	SPIBUFINIT;
 	MACHXO3_COMMAND = MACHXO3_CMD_READ_DEVICEID;
@@ -361,8 +424,6 @@ u32 af_read_unique_id(u8 *UniqueID) {
 	// All exported library functions get this check of hardware and arguments
 	if(!HW_IS_OPEN) return(af_err_not_open());
 	if(UniqueID == NULL) return(af_err_null_ptr());
-
-	if(!gRunQuiet) printf("Reading Unique ID\n");
 
 	// Construct the command
 	SPIBUFINIT;
