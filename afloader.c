@@ -37,12 +37,14 @@ typedef unsigned long u32;
 u32 af_disable_shared_sysconfig(void);
 u32 af_open(void);
 u32 af_close(void);
+u32 af_open_jedec_file (char *JEDECFileName);
+u32 af_close_jedec_file (void);
 u32 af_read_device_id(u8 *DeviceID);
 u32 af_read_unique_id(u8 *UniqueID);
 u32 af_erase_all(void);
 u32 af_load_configuration(void);
 u32 af_write_features(u8 *FeatureRow, u8 *Feabits);
-u32 af_write_configuration(char *JEDECFileName);
+u32 af_write_configuration(void);
 char jedec_seek_next_non_ws(void);
 char jedec_seek_next_key_char(void);
 u8 jedec_read_fuse_byte(u8 *FuseByte);
@@ -234,6 +236,14 @@ int main (int argc, char *argv[]) {
 		return(0);
 	}
 
+	// Open the jedec file before proceeding. We do not want to get into a situation
+	// where the FPGA is erased and cannot be reprogrammed.
+	if(af_open_jedec_file(gJEDECFilePath)){
+		printf("Failed to open JEDEC file.\n");
+		af_close();
+		return(-1);
+	}
+
 	// FPGA programming - these print error messages if they fail
 	// Try to erase the device
 	if(af_erase_all()) {
@@ -242,12 +252,14 @@ int main (int argc, char *argv[]) {
 	};
 
 	// Program FPGA
-	if(af_write_configuration(gJEDECFilePath)) {
+	if(af_write_configuration()) {
 		af_close();
 		return(-1);
 	};
 
 	// Verify the FPGA - TODO
+
+	af_close_jedec_file (); 
 
 	// Return success
 	return(0);
@@ -379,6 +391,40 @@ u32 af_close(void) {
 		printf("Closed SPI device %s\n", gSpiDevFilePath);
 
 	// Return success
+	return(0);
+}
+
+/*
+  af_open_jedec_file opens the JEDEC file for reading
+*/
+u32 af_open_jedec_file (char *JEDECFileName) {
+
+	if(JEDECFileName == NULL) return(af_err_null_ptr());
+	if(JEDECFileName[0] == 0) {
+		printf("JEDEC file name not provided. Did you forget the -j option?\n");
+		return(1);
+	}
+
+	// Attempt to open the JEDEC file
+	// A JEDEC file is a text file - we will only need to read text,
+	// and the end of line can be useful to us
+	g_pJedecFile = fopen(JEDECFileName, "r");
+	if(g_pJedecFile == NULL) return(af_err_file_not_found());
+
+	if(!gRunQuiet)
+		printf("JEDEC file: %s opened.\n", JEDECFileName );
+
+	return(0);
+}
+
+/*
+  af_open_jedec_file opens the JEDEC file for reading
+*/
+u32 af_close_jedec_file (void) {
+
+	if(g_pJedecFile)
+		fclose(g_pJedecFile);
+
 	return(0);
 }
 
@@ -636,7 +682,7 @@ exit:
    mean we could still be spoofed, but only by user intent.
 */
 
-u32 af_write_configuration(char *JEDECFileName) {
+u32 af_write_configuration(void) {
 	u8 featurerow[10];
 	u8 feabits[4];
 	int i, addr_digits, key, keyq;
@@ -648,11 +694,7 @@ u32 af_write_configuration(char *JEDECFileName) {
 	// All exported library functions get this check of hardware and arguments
 	// MessageBox(NULL, "af_write_configuration", "", MB_TASKMODAL);
 	if(!HW_IS_OPEN) return(af_err_not_open());
-	if(JEDECFileName == NULL) return(af_err_null_ptr());
-	if(JEDECFileName[0] == 0) {
-		printf("JEDEC file name not provided. Did you forget the -j option?\n");
-		return(-1);
-	}
+	if(g_pJedecFile==NULL) return(af_err_null_ptr());
 
 	// If the FPGA has not been erased, indicate bad order and quit
 	if(!gFPGAIsErased) return(af_err_not_erased());
@@ -661,15 +703,6 @@ u32 af_write_configuration(char *JEDECFileName) {
 	// so indicate that we tried to program the part and should erase it again before
 	// trying to program the part again.
 	gFPGAIsErased = 0;
-
-	// Attempt to open the JEDEC file
-	// A JEDEC file is a text file - we will only need to read text,
-	// and the end of line can be useful to us
-	g_pJedecFile = fopen(JEDECFileName, "r");
-	if(g_pJedecFile == NULL) return(af_err_file_not_found());
-
-	if(!gRunQuiet)
-		printf("JEDEC file: %s opened.\n", JEDECFileName );
 
 	// Read the file characters until we find the starting STX (CTRL-B, 0x02)
 	do { key = fgetc(g_pJedecFile); } while ((key != 0x02) && (key != EOF));
